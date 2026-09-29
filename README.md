@@ -31,6 +31,31 @@ Panels show:
   population diversity over generations.
 - **Gallery** – the best rocket of every generation; click one to overlay it.
 
+## Two kinds of rocket
+
+**Timeline genome** (default). The genome is a fixed list of thrust directions,
+so a rocket memorizes one route through one maze. It's fast to evolve, but
+useless on a maze it hasn't seen.
+
+**Reactive · sensors + network.** Each rocket casts 7 rays, senses the
+direction of the goal and its own speed, and feeds those 11 inputs through a
+small neural network (8 hidden neurons) that outputs turn and thrust. The
+genome is the network's 114 weights, so it evolves a *policy* instead of a path.
+
+- **Sensor rays** are drawn for the leading (or hovered) rocket: colour shows
+  how close the wall is, dots mark hits, and the gold arrow is the goal sensor.
+- **Brain** panel shows the live network for that rocket: neuron activations and
+  signal flowing along each weight.
+- **Terrain** rotates every few generations. Each generation is ranked on a pool
+  of four mazes (one on screen, three flown unseen), so the network can't
+  memorize a layout.
+- **Held-out mazes** are 12 fixed layouts the population never trains on. The
+  leading genome is tested on them every generation, and the header shows how
+  many it solves. Try it with terrain set to *fixed* versus *new maze every 5
+  gens* to see the difference generalization makes.
+- **Path guide** switches the goal sensor between the shortest-route direction
+  and the straight line to the goal.
+
 ## Mazes
 
 Pick a maze type and hit **New maze** to generate a fresh layout:
@@ -49,6 +74,7 @@ shared or replayed.
 | --- | --- |
 | Space | Play / pause |
 | → | Skip to the next phase |
+| Rockets / Terrain | Timeline or reactive rockets; how often the maze changes |
 | Speed | Simulation speed |
 | Mutation | Per-gene mutation rate |
 

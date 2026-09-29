@@ -35,6 +35,9 @@ canvas{display:block;width:100%;height:auto;border-radius:4px}
 .controls{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:12px}
 button{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
 button:hover{background:#30363d}
+body.reactive .only-t{display:none!important}
+body:not(.reactive) .only-r{display:none!important}
+.rayk{display:inline-block;width:46px;height:8px;border-radius:4px;vertical-align:middle;background:linear-gradient(90deg,#3ddc97,#ffd23f,#f85149)}
 select{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
 .seed{color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
 button.primary{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:600;min-width:84px}
@@ -44,12 +47,15 @@ input[type=range]{width:110px}
 #caption b{color:var(--text)}
 .gallery{padding:0 20px 24px}
 .strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px}
-.gcard{flex:0 0 160px;position:relative;cursor:pointer;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#0b0f14}
+.gcard,.hcard{flex:0 0 160px;position:relative;cursor:pointer;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#0b0f14}
 .gcard.pin{border-color:#fff}
-.gcard canvas{border-radius:0}
-.gcard div{position:absolute;left:6px;bottom:4px;font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}
-.gcard.ok div{color:var(--good)}
+.hcard{position:relative;border:2px solid var(--line);border-radius:6px;overflow:hidden;background:#0b0f14}
+.hcard.ok{border-color:var(--good)}.hcard.no{border-color:#7d3b3b}
+.gcard canvas,.hcard canvas{border-radius:0}
+.gcard div,.hcard div{position:absolute;left:6px;bottom:4px;font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}
+.gcard.ok div,.hcard.ok div{color:var(--good)}
 .gallery h2{font-size:13px;margin:0 0 8px}
+.gallery+.gallery{padding-top:0}
 </style>
 </head>
 <body>
@@ -60,6 +66,7 @@ input[type=range]{width:110px}
     <div class="stat"><small>Best distance</small><b id="sBest">–</b></div>
     <div class="stat"><small>Mean distance</small><b id="sMean">–</b></div>
     <div class="stat"><small>Reached goal</small><b id="sReach">–</b></div>
+    <div class="stat"><small>Held-out mazes</small><b id="sHeld">–</b></div>
     <div class="stat"><small>Status</small><b id="sSolved">searching</b></div>
   </div>
 </header>
@@ -76,6 +83,13 @@ input[type=range]{width:110px}
         <span><i class="ring"></i> elite carried over</span>
         <span><i class="dash"></i> previous best path</span>
         <span>faint glow = path-distance to goal</span>
+        <span class="only-r"><i class="rayk"></i> sensor ray: clear → wall</span>
+      </div>
+      <div class="controls">
+        <label>Rockets <select id="mode"><option value="timeline">Timeline genome</option><option value="reactive">Reactive · sensors + network</option></select></label>
+        <label class="only-r">Terrain <select id="terrain"><option value="0">fixed (one maze)</option><option value="3">new maze every 3 gens</option><option value="5" selected>new maze every 5 gens</option><option value="10">new maze every 10 gens</option></select></label>
+        <label class="only-r"><input id="raysT" type="checkbox" checked> sensor rays</label>
+        <label class="only-r" title="On: the goal sensor points along the shortest route. Off: it points straight at the goal, so walls must be worked out."><input id="guideT" type="checkbox" checked> path guide</label>
       </div>
       <div class="controls">
         <button id="play" class="primary">Pause</button>
@@ -92,7 +106,13 @@ input[type=range]{width:110px}
   </section>
 
   <section class="side">
-    <div class="card">
+    <div class="card only-r" id="brainCard">
+      <h2>Brain of the <span id="brainWho">leading</span> rocket</h2>
+      <p class="sub">Every step: 7 rays + goal direction + speed → 8 hidden neurons → turn and thrust. The genome is these 114 weights. Blue = positive, orange = negative; brighter lines carry more signal right now.</p>
+      <canvas id="brain"></canvas>
+      <div id="brainCap"></div>
+    </div>
+    <div class="card only-t" id="genomeCard">
       <h2>Genomes &amp; breeding</h2>
       <p class="sub">Each row is one rocket's DNA: 150 thrust directions (colour = angle), each held for 6 steps. Left: last generation ranked best → worst. Right: its offspring.</p>
       <canvas id="genome"></canvas>
@@ -116,12 +136,17 @@ input[type=range]{width:110px}
   <div class="strip" id="gallery"></div>
 </section>
 
+<section class="gallery">
+  <h2>Held-out mazes <span style="color:var(--mute);font-weight:400">· never trained on · the leading rocket's route, green = solved</span></h2>
+  <div class="strip" id="held"></div>
+</section>
+
 <script>
 // ==CORE==
 const W=640,H=480,STEPS=900,BLOCK=6,GENES=STEPS/BLOCK,POP=60,ELITE=3,CELL=8,GW=W/CELL,GH=H/CELL,RES=2,SW=W/RES,SH=H/RES;
 const MAXV=5,ACC=0.6,DRAG=0.96,TAU=Math.PI*2;
 const START={x:40,y:440}, GOAL={x:585,y:130,r:14};
-let WALLS=[], solid, field, blocked; // the current maze; swap with setMaze()
+let WALLS=[], solid, field, blocked, curMaze=null; // the current maze; swap with setMaze()
 
 // ---------- mazes ----------
 // A maze is {type,seed,start,goal,walls:[{x,y,w,h}]}. Coordinates are even so they line up with the collision raster.
@@ -161,7 +186,7 @@ function compile(m,pad=5){
 function setMaze(m){
   if(!m.c) m.c=compile(m);
   ({solid,blocked,field}=m.c); WALLS=m.walls;
-  START.x=m.start.x;START.y=m.start.y; GOAL.x=m.goal.x;GOAL.y=m.goal.y;
+  curMaze=m; START.x=m.start.x;START.y=m.start.y; GOAL.x=m.goal.x;GOAL.y=m.goal.y;
 }
 // Solvable with room to spare (passages >= ~28px) and not a straight shot from start to goal.
 function playable(m){
@@ -240,19 +265,25 @@ function pathDist(x,y){
   return isFinite(m)?m+CELL:9999;
 }
 function makeRocket(){
-  const r={x:START.x,y:START.y,vx:0,vy:0,alive:true,crashed:false,reached:false,endStep:0,n:1,bestD:pathDist(START.x,START.y),trail:new Float32Array(STEPS*2+2)};
+  const r={x:START.x,y:START.y,vx:0,vy:0,alive:true,crashed:false,reached:false,endStep:0,n:1,bestD:pathDist(START.x,START.y),trail:new Float32Array(STEPS*2+2),
+    th:-Math.PI/2,sx:START.x,sy:START.y,sth:-Math.PI/2,ray:new Float32Array(NRAY).fill(RAY_LEN),inp:new Float32Array(NI),hid:new Float32Array(NH),out:new Float32Array(NO)};
   r.trail[0]=START.x; r.trail[1]=START.y; return r;
 }
-function stepRocket(r,genes,s){
-  if(!r.alive) return;
-  const a=genes[(s/BLOCK)|0]/256*TAU;
-  r.vx=(r.vx+Math.cos(a)*ACC)*DRAG; r.vy=(r.vy+Math.sin(a)*ACC)*DRAG;
+// Shared physics: accelerate, drag, speed cap, wall collision, goal check.
+function move(r,ax,ay,s){
+  r.vx=(r.vx+ax)*DRAG; r.vy=(r.vy+ay)*DRAG;
   const sp=Math.hypot(r.vx,r.vy); if(sp>MAXV){r.vx*=MAXV/sp;r.vy*=MAXV/sp;}
   const nx=r.x+r.vx, ny=r.y+r.vy;
   if(hit(nx,ny)||hit((nx+r.x)/2,(ny+r.y)/2)){r.alive=false;r.crashed=true;r.endStep=s+1;return;}
   r.x=nx;r.y=ny; r.trail[2*r.n]=nx; r.trail[2*r.n+1]=ny; r.n++;
   const d=pathDist(nx,ny); if(d<r.bestD) r.bestD=d;
   if(Math.hypot(nx-GOAL.x,ny-GOAL.y)<GOAL.r){r.alive=false;r.reached=true;r.endStep=s+1;}
+}
+// Timeline rockets replay a fixed list of thrust directions.
+function stepRocket(r,genes,s){
+  if(!r.alive) return;
+  const a=genes[(s/BLOCK)|0]/256*TAU;
+  move(r,Math.cos(a)*ACC,Math.sin(a)*ACC,s);
 }
 function rocketDist(r){ return r.reached?0:r.bestD; } // closest approach along the flight, so late wandering isn't punished
 function rocketCost(r){
@@ -290,6 +321,93 @@ function breed(pop,costs,rate,ends){
   }
   return {order,children};
 }
+
+// ---------- reactive rockets: ray sensors + a small neural network ----------
+// Instead of a fixed timeline, the genome is the weights of a network that reads sensors every step. It learns a
+// policy ("turn away from close walls, head for the goal") rather than one path, so it can cope with unseen mazes.
+const NRAY=7, RAY_ANG=[-110,-70,-35,0,35,70,110].map(d=>d*Math.PI/180), RAY_LEN=120, RAY_STEP=4;
+const NI=NRAY+4, NH=8, NO=2, NW=(NI+1)*NH+(NH+1)*NO, TURN=0.22, GUIDE_R=3;
+const SENSOR_NAMES=['−110°','−70°','−35°','0°','35°','70°','110°','goal ›','goal ∧','fwd v','side v'];
+let guidePath=true; // guide sensor: heading of the shortest path (true) or the straight line to the goal (false)
+function castRay(x,y,a){
+  const dx=Math.cos(a)*RAY_STEP, dy=Math.sin(a)*RAY_STEP;
+  for(let d=RAY_STEP;d<=RAY_LEN;d+=RAY_STEP){ x+=dx; y+=dy; if(hit(x,y)) return d; }
+  return RAY_LEN;
+}
+// Direction in which the path-distance field falls fastest, looking a few cells ahead.
+function guideAngle(x,y){
+  const straight=Math.atan2(GOAL.y-y,GOAL.x-x); if(!guidePath) return straight;
+  const cx=Math.min(GW-1,Math.max(0,x/CELL|0)), cy=Math.min(GH-1,Math.max(0,y/CELL|0));
+  let best=Infinity,bx=cx,by=cy;
+  for(let dy=-GUIDE_R;dy<=GUIDE_R;dy++)for(let dx=-GUIDE_R;dx<=GUIDE_R;dx++){
+    const nx=cx+dx,ny=cy+dy; if(nx<0||ny<0||nx>=GW||ny>=GH) continue;
+    const v=field[ny*GW+nx]; if(v<best){best=v;bx=nx;by=ny;}
+  }
+  if(!isFinite(best)||(bx===cx&&by===cy)) return straight;
+  return Math.atan2((by+.5)*CELL-y,(bx+.5)*CELL-x);
+}
+function stepNet(r,w){
+  if(!r.alive) return;
+  const inp=r.inp,hid=r.hid,out=r.out,th=r.th;
+  r.sx=r.x;r.sy=r.y;r.sth=th;
+  for(let i=0;i<NRAY;i++){const d=castRay(r.x,r.y,th+RAY_ANG[i]);r.ray[i]=d;inp[i]=1-d/RAY_LEN;}
+  const ga=guideAngle(r.x,r.y)-th, c=Math.cos(th), sn=Math.sin(th);
+  inp[NRAY]=Math.cos(ga); inp[NRAY+1]=Math.sin(ga);
+  inp[NRAY+2]=(r.vx*c+r.vy*sn)/MAXV; inp[NRAY+3]=(-r.vx*sn+r.vy*c)/MAXV;
+  for(let j=0;j<NH;j++){let a=w[j*(NI+1)+NI];for(let i=0;i<NI;i++)a+=w[j*(NI+1)+i]*inp[i];hid[j]=Math.tanh(a);}
+  for(let k=0;k<NO;k++){const o=NH*(NI+1)+k*(NH+1);let a=w[o+NH];for(let j=0;j<NH;j++)a+=w[o+j]*hid[j];out[k]=Math.tanh(a);}
+  r.th+=out[0]*TURN;
+  const thrust=(out[1]+1)/2*ACC;
+  move(r,Math.cos(r.th)*thrust,Math.sin(r.th)*thrust,r.n-1 /* one trail point per step while alive */);
+}
+const randn=()=>Math.sqrt(-2*Math.log(1-Math.random()))*Math.cos(TAU*Math.random());
+function randNet(){const w=new Float32Array(NW);for(let i=0;i<NW;i++)w[i]=randn()*0.6;return w;}
+const SIGMA=0.35;
+function breedNet(pop,costs,rate){
+  const order=[...costs.keys()].sort((a,b)=>costs[a]-costs[b]);
+  const pick=()=>Math.min(Math.random()*POP|0,Math.random()*POP|0,Math.random()*POP|0);
+  const children=[];
+  for(let k=0;k<ELITE;k++) children.push({genes:pop[order[k]].genes.slice(),type:'elite',pa:k,pb:k,muts:0});
+  while(children.length<POP){
+    const pa=pick(),pb=pick(),A=pop[order[pa]].genes,B=pop[order[pb]].genes, cross=Math.random()<0.85;
+    const genes=new Float32Array(NW); let muts=0;
+    for(let g=0;g<NW;g++){
+      genes[g]=cross&&Math.random()<0.5?B[g]:A[g];
+      if(Math.random()<rate){genes[g]=Math.random()<0.1?randn()*0.6:genes[g]+randn()*SIGMA;muts++;}
+    }
+    children.push({genes,type:cross?'cross':'clone',pa,pb:cross?pb:pa,muts});
+  }
+  return {order,children};
+}
+// How many of `mazes` does this genome solve? (fresh rocket per maze; restores the current maze afterwards)
+function testOn(mazes,genes,reactive,out){
+  const keep=curMaze; let ok=0;
+  for(const m of mazes){
+    setMaze(m); const r=makeRocket();
+    for(let s=0;s<STEPS&&r.alive;s++){ if(reactive) stepNet(r,genes); else stepRocket(r,genes,s); }
+    if(r.reached) ok++;
+    if(out) out.push({ok:r.reached,trail:r.trail.slice(0,r.n*2),n:r.n});
+  }
+  if(keep) setMaze(keep);
+  return ok;
+}
+// Mean cost of every genome over several mazes, flown without animation. Ranking on a pool of mazes (not just the
+// one on screen) is what stops a network from memorising a single layout.
+function evalCosts(genomes,mazes,reactive){
+  const keep=curMaze, tot=new Float64Array(genomes.length);
+  for(const m of mazes){
+    setMaze(m);
+    const rs=genomes.map(()=>makeRocket());
+    for(let s=0;s<STEPS;s++){
+      let any=false;
+      for(let i=0;i<rs.length;i++) if(rs[i].alive){any=true; if(reactive) stepNet(rs[i],genomes[i]); else stepRocket(rs[i],genomes[i],s);}
+      if(!any) break;
+    }
+    rs.forEach((r,i)=>{ if(r.alive) r.endStep=STEPS; tot[i]+=rocketCost(r); });
+  }
+  if(keep) setMaze(keep);
+  return Array.from(tot,v=>v/mazes.length);
+}
 // ==/CORE==
 
 // ---------- UI ----------
@@ -298,6 +416,7 @@ function setup(cv,lw,lh){cv.width=lw*2;cv.height=lh*2;const c=cv.getContext('2d'
 const actx=setup($('arena'),W,H);
 const G={LW:628,LH:334,top:26,RH:5,lx:8,sw:250,rx:370};
 const gctx=setup($('genome'),G.LW,G.LH);
+const bctx=setup($('brain'),628,300);
 const fctx=setup($('fit'),628,180);
 const dctx=setup($('div'),628,100);
 
@@ -325,6 +444,9 @@ function renderField(){
 let pop,rockets,gen,phase,stepsDone,stepF,phaseT,nextPop,lastCosts;
 let paused=false,speed=1,mutRate=0.03,hover=-1,hoverParent=-1,pinned=-1,solvedGen=-1;
 let hist=[],panel,live={colors:[],rank:[]};
+let mode='timeline',terrainEvery=5,pool=[],heldMazes=[],heldType='',terrainMarks=[];
+const isReactive=()=>mode==='reactive';
+const terrainType=()=>curMaze.type==='classic'?'serpentine':curMaze.type;
 const showField=()=>$('fieldT').checked, showTrails=()=>$('trailT').checked;
 
 function randGenes(){const g=new Uint8Array(GENES);for(let i=0;i<GENES;i++)g[i]=Math.random()*256|0;return g;}
@@ -344,10 +466,47 @@ function buildStrip(rows){
 }
 
 function init(){
-  gen=0; hist=[]; $('gallery').innerHTML=''; solvedGen=-1; pinned=-1; hover=-1; hoverParent=-1;
-  pop=Array.from({length:POP},()=>({genes:randGenes(),type:'random',mask:null}));
-  panel={left:null,right:buildStrip(pop),leftColors:[],info:pop,reveal:POP};
-  startFlight(); updateStats();
+  gen=0; hist=[]; terrainMarks=[]; $('gallery').innerHTML=''; solvedGen=-1; pinned=-1; hover=-1; hoverParent=-1;
+  if(isReactive()){
+    pop=Array.from({length:POP},()=>({genes:randNet(),type:'random'}));
+    panel={left:null,right:null,leftColors:[],info:null,reveal:POP};
+  }else{
+    pop=Array.from({length:POP},()=>({genes:randGenes(),type:'random',mask:null}));
+    panel={left:null,right:buildStrip(pop),leftColors:[],info:pop,reveal:POP};
+  }
+  buildHeld(); startFlight(); updateStats();
+}
+// Reactive mode ranks each generation on a pool of mazes (the last one is on screen, the rest fly unseen) and
+// swaps in a fresh maze every few generations, so the network can't just memorise one layout.
+function buildPool(){
+  const m=curMaze, hidden=isReactive()&&terrainEvery>0?3:0, tt=terrainType();
+  pool=Array.from({length:hidden},()=>makeMaze(tt,randSeed())); pool.push(m);
+}
+function rotateTerrain(){
+  const m=makeMaze(terrainType(),randSeed()); pool.shift(); pool.push(m);
+  setMaze(m); renderField(); showMazeInfo(m);
+  terrainMarks.push(hist.length); pinned=-1; document.querySelectorAll('#gallery .gcard').forEach(e=>e.classList.remove('pin'));
+}
+// Held-out mazes: fixed layouts the population is never trained on; the leading genome is tested on them each generation.
+function buildHeld(){
+  const tt=terrainType(); const box=$('held');
+  if(heldType!==tt||!heldMazes.length){
+    heldType=tt; heldMazes=Array.from({length:12},(_,i)=>makeMaze(tt,900000+i));
+    box.innerHTML='';
+    heldMazes.forEach(m=>{const d=document.createElement('div');d.className='hcard';const cv=document.createElement('canvas');cv.width=320;cv.height=240;
+      const lab=document.createElement('div');lab.textContent='seed '+m.seed;d.append(cv,lab);box.appendChild(d);});
+  }
+  heldMazes.forEach((m,i)=>{box.children[i].className='hcard';drawMazeMini(box.children[i].firstChild,m,null,0,false);});
+  $('sHeld').textContent='–';
+}
+function drawMazeMini(cv,m,trail,n,ok){
+  const c=cv.getContext('2d');c.setTransform(1,0,0,1,0,0);
+  const S=cv.width/W;c.scale(S,S);c.fillStyle='#0b0f14';c.fillRect(0,0,W,H);
+  c.fillStyle='#39414b';for(const w of m.walls)c.fillRect(w.x,w.y,w.w,w.h);
+  c.fillStyle='rgba(61,220,151,.5)';c.beginPath();c.arc(m.goal.x,m.goal.y,14,0,TAU);c.fill();
+  c.fillStyle='#8b949e';c.beginPath();c.arc(m.start.x,m.start.y,5,0,TAU);c.fill();
+  if(trail){c.strokeStyle=ok?'#3ddc97':'#58a6ff';c.lineWidth=3.6/S;c.lineJoin='round';c.beginPath();
+    for(let i=0;i<n;i++)i?c.lineTo(trail[2*i],trail[2*i+1]):c.moveTo(trail[0],trail[1]);c.stroke();}
 }
 function startFlight(){
   rockets=pop.map(()=>makeRocket()); stepsDone=0; stepF=0; phaseT=0; phase='flight'; updatePhase();
@@ -359,23 +518,32 @@ const rightIsCurrent=()=>phase!=='breed';
 
 function toEvaluate(){
   for(const r of rockets) if(r.alive) r.endStep=STEPS;
-  lastCosts=rockets.map(rocketCost);
-  const dists=rockets.map(rocketDist);
-  const bi=lastCosts.indexOf(Math.min(...lastCosts));
+  const live=rockets.map(rocketCost), dists=rockets.map(rocketDist);
+  lastCosts=live;
+  if(isReactive()&&pool.length>1){ // rank on the whole pool: the on-screen maze plus the unseen ones
+    const hid=evalCosts(pop.map(p=>p.genes),pool.slice(0,-1),true), k=pool.length;
+    lastCosts=live.map((c,i)=>(c+hid[i]*(k-1))/k);
+  }
+  const bi=live.indexOf(Math.min(...live));
   const sorted=[...dists].sort((a,b)=>a-b), q=f=>sorted[Math.min(POP-1,Math.floor(f*(POP-1)))];
   let d=0,n=0;
   for(let k=0;k<80;k++){
     const a=pop[Math.random()*POP|0].genes,b=pop[Math.random()*POP|0].genes; if(a===b) continue;
-    let df=0;for(let g=0;g<GENES;g++) if((a[g]>>3)!==(b[g]>>3)) df++; d+=df/GENES;n++;
+    if(isReactive()){let df=0;for(let g=0;g<NW;g++) df+=Math.abs(a[g]-b[g]); d+=Math.min(1,df/NW/0.68);n++;} // 0.68 = mean gap between two random nets
+    else{let df=0;for(let g=0;g<GENES;g++) if((a[g]>>3)!==(b[g]>>3)) df++; d+=df/GENES;n++;}
   }
   const br=rockets[bi], reached=rockets.filter(r=>r.reached).length;
   const h={gen,best:dists[bi],mean:dists.reduce((s,v)=>s+v,0)/POP,p10:q(.1),p90:q(.9),reached,div:n?d/n:0,
            trail:br.trail.slice(0,br.n*2),n:br.n,ok:br.reached};
-  hist.push(h);
+  h.maze=curMaze; hist.push(h);
+  const eliteG=pop[lastCosts.indexOf(Math.min(...lastCosts))].genes, res=[];
+  h.held=testOn(heldMazes,eliteG,isReactive(),res);
+  res.forEach((r,i)=>{const d=$('held').children[i];d.className='hcard '+(r.ok?'ok':'no');drawMazeMini(d.firstChild,heldMazes[i],r.trail,r.n,r.ok);});
   if(solvedGen<0&&reached>0) solvedGen=gen;
   addCard(h); phase='evaluate'; phaseT=0; updatePhase(); updateStats();
 }
 function toBreed(){
+  if(isReactive()){ nextPop=breedNet(pop,lastCosts,mutRate).children; phase='breed'; phaseT=0; hover=-1; updatePhase(); return; }
   const res=breed(pop,lastCosts,mutRate,rockets.map(r=>r.endStep));
   panel.left=buildStrip(res.order.map(i=>({genes:pop[i].genes})));
   panel.leftColors=res.order.map((_,k)=>rankCss(k/(POP-1)));
@@ -383,7 +551,13 @@ function toBreed(){
   nextPop=res.children; phase='breed'; phaseT=0; hover=-1; updatePhase();
 }
 function finishBreed(){
-  pop=nextPop; gen++; panel.reveal=POP; hover=-1; startFlight(); updateStats();
+  pop=nextPop; gen++; panel.reveal=POP; hover=-1;
+  if(isReactive()&&terrainEvery>0&&gen%terrainEvery===0) rotateTerrain();
+  startFlight(); updateStats();
+}
+function stepAll(){
+  for(let i=0;i<POP;i++){ if(isReactive()) stepNet(rockets[i],pop[i].genes); else stepRocket(rockets[i],pop[i].genes,stepsDone); }
+  stepsDone++;
 }
 function flightDone(){ return stepsDone>=STEPS||rockets.every(r=>!r.alive); }
 
@@ -391,21 +565,21 @@ function advance(dt){
   if(phase==='flight'){
     stepF+=2*speed;
     while(stepsDone<Math.floor(stepF)&&!flightDone()){
-      for(let i=0;i<POP;i++) stepRocket(rockets[i],pop[i].genes,stepsDone);
-      stepsDone++;
+      stepAll();
     }
     if(flightDone()) toEvaluate();
   }else if(phase==='evaluate'){
     phaseT+=dt; if(phaseT>1100/speed) toBreed();
   }else{
-    phaseT+=dt; const dur=2200/speed;
+    phaseT+=dt; const dur=isReactive()?500/speed:2200/speed;
+    if(isReactive()){ if(phaseT>dur) finishBreed(); return; }
     panel.reveal=Math.min(POP,Math.floor(phaseT/dur*POP*1.15));
     if(phaseT>dur+400/speed) finishBreed();
   }
 }
 function skip(){
   if(phase==='flight'){
-    while(!flightDone()){for(let i=0;i<POP;i++)stepRocket(rockets[i],pop[i].genes,stepsDone);stepsDone++;}
+    while(!flightDone()) stepAll();
     toEvaluate();
   }else if(phase==='evaluate') toBreed();
   else finishBreed();
@@ -417,6 +591,7 @@ function updateStats(){
   $('sBest').textContent=h?Math.round(h.best)+' px':'–';
   $('sMean').textContent=h?Math.round(h.mean)+' px':'–';
   $('sReach').textContent=h?h.reached+' / '+POP:'–';
+  $('sHeld').textContent=h?h.held+' / '+heldMazes.length:'–';
   const s=$('sSolved');
   if(solvedGen>=0){s.textContent='solved @ gen '+solvedGen;s.className='solved';}
   else{s.textContent='searching';s.className='';}
@@ -436,7 +611,7 @@ function addCard(h){
   const cv=document.createElement('canvas');cv.width=320;cv.height=240;
   const lab=document.createElement('div');lab.textContent=`gen ${h.gen} · ${Math.round(h.best)} px`;
   d.append(cv,lab);drawMini(cv,h);
-  d.onclick=()=>{pinned=pinned===h.gen?-1:h.gen;document.querySelectorAll('.gcard').forEach((e,i)=>e.classList.toggle('pin',i===pinned));};
+  d.onclick=()=>{pinned=pinned===h.gen?-1:h.gen;document.querySelectorAll('#gallery .gcard').forEach((e,i)=>e.classList.toggle('pin',i===pinned));};
   const g=$('gallery');g.appendChild(d);g.scrollLeft=g.scrollWidth;
 }
 
@@ -462,7 +637,7 @@ function drawArena(){
   c.fillStyle='#8b949e';c.font='11px sans-serif';c.fillText('start',START.x+8,START.y+4);c.fillText('goal',GOAL.x+GOAL.r+6,GOAL.y+4);
 
   // previous best path (ghost)
-  const prev=hist.length&&(phase==='flight')?hist[hist.length-1]:null;
+  const prev=hist.length&&(phase==='flight')&&hist[hist.length-1].maze===curMaze?hist[hist.length-1]:null;
   if(prev){
     c.setLineDash([5,5]);c.strokeStyle='rgba(230,237,243,.45)';c.lineWidth=1.5;
     c.beginPath();for(let i=0;i<prev.n;i++)i?c.lineTo(prev.trail[2*i],prev.trail[2*i+1]):c.moveTo(prev.trail[0],prev.trail[1]);c.stroke();c.setLineDash([]);
@@ -495,6 +670,7 @@ function drawArena(){
     if(pop[j].type==='elite'){c.strokeStyle='#fff';c.lineWidth=1.5;c.beginPath();c.arc(fx,fy,7.5,0,TAU);c.stroke();}
   }
   c.globalAlpha=1;
+  if(isReactive()&&$('raysT').checked&&phase!=='breed') drawRays();
   // pinned overlay
   if(pinned>=0&&hist[pinned]){
     const h=hist[pinned];c.strokeStyle='#fff';c.lineWidth=2.5;c.lineJoin='round';
@@ -504,6 +680,67 @@ function drawArena(){
   // step counter
   c.fillStyle='#8b949e';c.font='11px sans-serif';
   c.fillText(`gen ${gen} · step ${Math.min(stepsDone,STEPS)}/${STEPS}`,W-118,16);
+}
+
+// ---------- sensor rays & brain ----------
+function focusIdx(){
+  if(hover>=0&&rightIsCurrent()&&rockets[hover]) return hover;
+  let b=-1; rockets.forEach((r,j)=>{ if(r.alive&&(b<0||live.rank[j]<live.rank[b])) b=j; });
+  return b>=0?b:Math.max(0,live.rank.indexOf(0));
+}
+const rayCss=(t,a)=>t<.5?`rgba(${Math.round(61+(255-61)*t*2)},${Math.round(220-10*t*2)},${Math.round(151-88*t*2)},${a})`
+                       :`rgba(${Math.round(255-7*(t-.5)*2)},${Math.round(210-129*(t-.5)*2)},${Math.round(63+10*(t-.5)*2)},${a})`;
+function drawRays(){
+  const c=actx, f=focusIdx();
+  c.save(); c.lineCap='round';
+  rockets.forEach((r,j)=>{ // everyone's rays, faint
+    if(!r.alive||j===f) return;
+    c.strokeStyle='rgba(139,148,158,.10)';c.lineWidth=1;c.beginPath();
+    for(let i=0;i<NRAY;i++){const a=r.sth+RAY_ANG[i];c.moveTo(r.sx,r.sy);c.lineTo(r.sx+Math.cos(a)*r.ray[i],r.sy+Math.sin(a)*r.ray[i]);}
+    c.stroke();
+  });
+  const r=rockets[f]; if(!r){c.restore();return;}
+  const ends=Array.from(r.ray,(d,i)=>[r.sx+Math.cos(r.sth+RAY_ANG[i])*d,r.sy+Math.sin(r.sth+RAY_ANG[i])*d]);
+  c.fillStyle='rgba(88,166,255,.10)';c.beginPath();c.moveTo(r.sx,r.sy);ends.forEach(e=>c.lineTo(e[0],e[1]));c.closePath();c.fill();
+  ends.forEach((e,i)=>{
+    const t=1-r.ray[i]/RAY_LEN;
+    c.strokeStyle=rayCss(t,.95);c.lineWidth=1.8;c.beginPath();c.moveTo(r.sx,r.sy);c.lineTo(e[0],e[1]);c.stroke();
+    if(r.ray[i]<RAY_LEN){c.fillStyle=rayCss(t,1);c.beginPath();c.arc(e[0],e[1],3,0,TAU);c.fill();c.strokeStyle='#fff';c.lineWidth=1;c.stroke();}
+  });
+  const ga=guideAngle(r.sx,r.sy); // gold arrow: what the goal sensor is pointing at
+  c.strokeStyle='#ffd23f';c.fillStyle='#ffd23f';c.lineWidth=2;
+  const ex=r.sx+Math.cos(ga)*34, ey=r.sy+Math.sin(ga)*34;
+  c.beginPath();c.moveTo(r.sx,r.sy);c.lineTo(ex,ey);c.stroke();
+  c.beginPath();c.moveTo(ex,ey);c.lineTo(ex-Math.cos(ga-.5)*8,ey-Math.sin(ga-.5)*8);c.lineTo(ex-Math.cos(ga+.5)*8,ey-Math.sin(ga+.5)*8);c.closePath();c.fill();
+  c.restore();
+}
+function drawBrain(){
+  const c=bctx, f=focusIdx(), r=rockets[f], w=pop[f]&&pop[f].genes; c.clearRect(0,0,628,300);
+  $('brainWho').textContent=hover>=0&&rightIsCurrent()?'hovered':'leading';
+  if(!r||!w) return;
+  const xi=118,xh=330,xo=520,ys=(n,k)=>20+(260*(k+.5))/n, val=v=>Math.max(-1,Math.min(1,v));
+  const link=(x0,y0,x1,y1,wt,sig)=>{
+    const a=Math.min(.95,Math.abs(wt*sig)*.9+.04);
+    c.strokeStyle=wt>0?`rgba(88,166,255,${a})`:`rgba(255,140,66,${a})`;c.lineWidth=.4+Math.min(2,Math.abs(wt)*.9);
+    c.beginPath();c.moveTo(x0,y0);c.bezierCurveTo(x0+70,y0,x1-70,y1,x1,y1);c.stroke();
+  };
+  for(let j=0;j<NH;j++)for(let i=0;i<NI;i++) link(xi,ys(NI,i),xh,ys(NH,j),w[j*(NI+1)+i],r.inp[i]);
+  for(let k=0;k<NO;k++)for(let j=0;j<NH;j++) link(xh,ys(NH,j),xo,ys(NO,k),w[NH*(NI+1)+k*(NH+1)+j],r.hid[j]);
+  const node=(x,y,v,col)=>{
+    c.fillStyle='#0d1117';c.beginPath();c.arc(x,y,8,0,TAU);c.fill();
+    c.fillStyle=col||(v>=0?`rgba(88,166,255,${Math.abs(v)})`:`rgba(255,140,66,${Math.abs(v)})`);c.beginPath();c.arc(x,y,8,0,TAU);c.fill();
+    c.strokeStyle='#57606a';c.lineWidth=1;c.stroke();
+  };
+  c.font='11px sans-serif';c.fillStyle='#8b949e';
+  for(let i=0;i<NI;i++){
+    const y=ys(NI,i); node(xi,y,val(r.inp[i]),i<NRAY?rayCss(r.inp[i],1):null);
+    c.fillStyle='#8b949e';c.textAlign='right';c.fillText(i<NRAY?'ray '+SENSOR_NAMES[i]:SENSOR_NAMES[i],xi-14,y+4);
+  }
+  for(let j=0;j<NH;j++) node(xh,ys(NH,j),val(r.hid[j]));
+  const outN=['turn','thrust'];
+  for(let k=0;k<NO;k++){node(xo,ys(NO,k),val(r.out[k]));c.fillStyle='#8b949e';c.textAlign='left';c.fillText(outN[k]+' '+(r.out[k]>=0?'+':'')+r.out[k].toFixed(2),xo+14,ys(NO,k)+4);}
+  c.fillStyle='#8b949e';c.textAlign='center';c.fillText('sensors',xi,12);c.fillText('hidden',xh,12);c.fillText('actions',xo,12);c.textAlign='left';
+  $('brainCap').textContent=r.alive?'Ray nodes light up as walls get close; “goal” nodes give the direction of the gold arrow relative to the heading.':'This rocket has stopped — its last sensor readings are shown.';
 }
 
 // ---------- genome panel ----------
@@ -603,6 +840,8 @@ function drawCharts(){
     const last=hist[hist.length-1];fctx.fillStyle='#3ddc97';fctx.beginPath();fctx.arc(m.X(hist.length-1),m.Y(last.best),3.5,0,TAU);fctx.fill();
     if(solvedGen>=0){fctx.setLineDash([4,4]);fctx.strokeStyle='#3ddc97';fctx.beginPath();fctx.moveTo(m.X(solvedGen),10);fctx.lineTo(m.X(solvedGen),158);fctx.stroke();fctx.setLineDash([]);
       fctx.fillStyle='#3ddc97';fctx.fillText('first solved',m.X(solvedGen)+5,22);}
+    terrainMarks.forEach((x,k)=>{fctx.setLineDash([2,4]);fctx.strokeStyle='#ffd23f';fctx.beginPath();fctx.moveTo(m.X(x),10);fctx.lineTo(m.X(x),158);fctx.stroke();fctx.setLineDash([]);
+      if(k===0){fctx.fillStyle='#ffd23f';fctx.fillText('new terrain',m.X(x)+4,34);}});
     fctx.font='11px sans-serif';fctx.fillStyle='#3ddc97';fctx.fillText('best',52,22);fctx.fillStyle='#58a6ff';fctx.fillText('mean',90,22);
   }
   m=frame(dctx,628,100,xmax,1,v=>v.toFixed(1));
@@ -643,23 +882,35 @@ let last=performance.now();
 function loop(t){
   const dt=Math.min(100,t-last);last=t;
   if(!paused)advance(dt);
-  drawArena();drawGenome();drawCharts();
+  drawArena();if(isReactive())drawBrain();else drawGenome();drawCharts();
   requestAnimationFrame(loop);
 }
 // The maze lives in the URL hash (#maze=scattered&seed=1234) so a layout can be shared or replayed.
+function showMazeInfo(m){
+  $('mazeType').value=m.type; $('seedV').textContent=m.type==='classic'?'':'seed '+m.seed;
+  const q=[]; if(m.type!=='classic') q.push('maze='+m.type,'seed='+m.seed); if(isReactive()) q.push('mode=reactive');
+  history.replaceState(null,'',location.pathname+location.search+(q.length?'#'+q.join('&'):''));
+}
 function loadMaze(type,seed){
-  const m=makeMaze(type,seed); setMaze(m); renderField();
-  $('mazeType').value=type; $('seedV').textContent=type==='classic'?'':'seed '+seed;
-  history.replaceState(null,'',type==='classic'?location.pathname+location.search:`#maze=${type}&seed=${seed}`);
-  init();
+  const m=makeMaze(type,seed); setMaze(m); renderField(); showMazeInfo(m);
+  buildPool(); init();
+}
+function setMode(mm){
+  mode=mm; document.body.classList.toggle('reactive',isReactive());
+  $('mode').value=mm; mutRate=isReactive()?0.05:0.03; $('mut').value=mutRate*100; $('mutV').textContent=$('mut').value+'%';
 }
 const randSeed=()=>1+Math.random()*999998|0;
 function loadFromHash(){
   const q=new URLSearchParams(location.hash.slice(1)), t=q.get('maze'), sd=+q.get('seed');
+  setMode(q.get('mode')==='reactive'?'reactive':'timeline');
   if(MAZE_TYPES.includes(t)) loadMaze(t,t==='classic'?0:(sd>0?sd:randSeed())); else loadMaze('classic',0);
 }
 $('mazeType').onchange=e=>loadMaze(e.target.value,e.target.value==='classic'?0:randSeed());
 $('newMaze').onclick=()=>{const t=$('mazeType').value;loadMaze(t==='classic'?'serpentine':t,randSeed());};
+const reload=()=>loadMaze(curMaze.type,curMaze.seed);
+$('mode').onchange=e=>{setMode(e.target.value);reload();};
+$('terrain').onchange=e=>{terrainEvery=+e.target.value;reload();};
+$('guideT').onchange=e=>{guidePath=e.target.checked;reload();};
 addEventListener('hashchange',loadFromHash);
 loadFromHash();
 requestAnimationFrame(loop);
