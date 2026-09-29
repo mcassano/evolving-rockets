@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evolving Rockets</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --mute:#8b949e;
+  --good:#3ddc97; --blue:#58a6ff; --gold:#ffd23f; --bad:#f85149; --violet:#a78bfa;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px 32px;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--line)}
+h1{font-size:18px;margin:0;font-weight:600}
+h1 span{color:var(--mute);font-weight:400}
+.stats{display:flex;gap:22px;flex-wrap:wrap}
+.stat b{display:block;font-size:20px;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat small{color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.solved{color:var(--good)}
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:16px 20px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+.card h2{margin:0 0 2px;font-size:13px;font-weight:600}
+.card p.sub{margin:0 0 8px;color:var(--mute);font-size:12px}
+canvas{display:block;width:100%;height:auto;border-radius:4px}
+.side{display:flex;flex-direction:column;gap:16px}
+.phases{display:flex;gap:6px;margin-bottom:10px}
+.phases span{flex:1;text-align:center;padding:5px 0;border-radius:999px;border:1px solid var(--line);color:var(--mute);font-size:12px}
+.phases span.on{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;color:var(--mute);font-size:12px;margin-top:8px;align-items:center}
+.grad{display:inline-block;width:70px;height:8px;border-radius:4px;vertical-align:middle;background:linear-gradient(90deg,#ffd23f,#3ddc97,#4a6cf7)}
+.ring{display:inline-block;width:10px;height:10px;border:2px solid #fff;border-radius:50%;vertical-align:middle}
+.dash{display:inline-block;width:22px;border-top:2px dashed #ccc;vertical-align:middle}
+.controls{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:12px}
+button{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
+button:hover{background:#30363d}
+button.primary{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:600;min-width:84px}
+label{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:12px}
+input[type=range]{width:110px}
+#caption{min-height:34px;margin-top:8px;font-size:12px;color:var(--mute)}
+#caption b{color:var(--text)}
+.gallery{padding:0 20px 24px}
+.strip{display:flex;gap:10px;overflow-x:auto;padding-bottom:8px}
+.gcard{flex:0 0 160px;position:relative;cursor:pointer;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#0b0f14}
+.gcard.pin{border-color:#fff}
+.gcard canvas{border-radius:0}
+.gcard div{position:absolute;left:6px;bottom:4px;font-size:11px;color:var(--mute);font-variant-numeric:tabular-nums}
+.gcard.ok div{color:var(--good)}
+.gallery h2{font-size:13px;margin:0 0 8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Genetic Algorithm <span>· evolving rockets through a serpentine maze</span></h1>
+  <div class="stats">
+    <div class="stat"><small>Generation</small><b id="sGen">0</b></div>
+    <div class="stat"><small>Best distance</small><b id="sBest">–</b></div>
+    <div class="stat"><small>Mean distance</small><b id="sMean">–</b></div>
+    <div class="stat"><small>Reached goal</small><b id="sReach">–</b></div>
+    <div class="stat"><small>Status</small><b id="sSolved">searching</b></div>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <div class="phases">
+        <span id="ph-flight">1 · Flight</span><span id="ph-evaluate">2 · Evaluate</span><span id="ph-breed">3 · Select &amp; breed</span>
+      </div>
+      <canvas id="arena"></canvas>
+      <div class="legend">
+        <span><i class="grad"></i> best → worst (live rank)</span>
+        <span><i class="ring"></i> elite carried over</span>
+        <span><i class="dash"></i> previous best path</span>
+        <span>faint glow = path-distance to goal</span>
+      </div>
+      <div class="controls">
+        <button id="play" class="primary">Pause</button>
+        <button id="step" title="Skip to the next phase (→)">Next phase ›</button>
+        <button id="reset">Reset</button>
+        <label>Speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span id="speedV">1×</span></label>
+        <label>Mutation <input id="mut" type="range" min="0" max="10" step="0.5" value="3"><span id="mutV">3%</span></label>
+        <label><input id="fieldT" type="checkbox" checked> distance field</label>
+        <label><input id="trailT" type="checkbox" checked> trails</label>
+      </div>
+    </div>
+  </section>
+
+  <section class="side">
+    <div class="card">
+      <h2>Genomes &amp; breeding</h2>
+      <p class="sub">Each row is one rocket's DNA: 150 thrust directions (colour = angle), each held for 6 steps. Left: last generation ranked best → worst. Right: its offspring.</p>
+      <canvas id="genome"></canvas>
+      <div id="caption"></div>
+    </div>
+    <div class="card">
+      <h2>Distance to goal (px, lower is better)</h2>
+      <p class="sub">Best and mean per generation, with the 10th–90th percentile band.</p>
+      <canvas id="fit"></canvas>
+    </div>
+    <div class="card">
+      <h2>Population diversity</h2>
+      <p class="sub">Fraction of genes that differ between random pairs. Falls as the population converges.</p>
+      <canvas id="div"></canvas>
+    </div>
+  </section>
+</main>
+
+<section class="gallery">
+  <h2>Best rocket of each generation <span style="color:var(--mute);font-weight:400">· click a card to overlay it on the arena</span></h2>
+  <div class="strip" id="gallery"></div>
+</section>
+
+<script>
+// ==CORE==
+const W=640,H=480,STEPS=900,BLOCK=6,GENES=STEPS/BLOCK,POP=60,ELITE=3,CELL=8,GW=W/CELL,GH=H/CELL;
+const MAXV=5,ACC=0.6,DRAG=0.96,TAU=Math.PI*2;
+const START={x:40,y:440}, GOAL={x:585,y:130,r:14};
+const WALLS=[
+  {x:0,  y:370,w:560,h:14},   // serpentine: gaps alternate right / left / right
+  {x:80, y:280,w:560,h:14},
+  {x:0,  y:190,w:560,h:14},
+];
+function hit(x,y){
+  if(x<0||y<0||x>W||y>H) return true;
+  for(const w of WALLS) if(x>=w.x&&x<=w.x+w.w&&y>=w.y&&y<=w.y+w.h) return true;
+  return false;
+}
+// Path-distance field: shortest route to the goal around walls (Dijkstra-style relaxation on a grid).
+const field=new Float32Array(GW*GH).fill(Infinity), blocked=new Uint8Array(GW*GH);
+(function buildField(){
+  const pad=5;
+  for(let cy=0;cy<GH;cy++)for(let cx=0;cx<GW;cx++){
+    const x0=cx*CELL,y0=cy*CELL,x1=x0+CELL,y1=y0+CELL;
+    for(const w of WALLS) if(x1>w.x-pad&&x0<w.x+w.w+pad&&y1>w.y-pad&&y0<w.y+w.h+pad){blocked[cy*GW+cx]=1;break;}
+  }
+  const g=Math.floor(GOAL.y/CELL)*GW+Math.floor(GOAL.x/CELL); field[g]=0;
+  const q=[g]; let head=0;
+  while(head<q.length){
+    const i=q[head++], cx=i%GW, cy=(i/GW)|0;
+    for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+      if(!dx&&!dy) continue;
+      const nx=cx+dx,ny=cy+dy; if(nx<0||ny<0||nx>=GW||ny>=GH) continue;
+      const j=ny*GW+nx; if(blocked[j]) continue;
+      if(dx&&dy&&(blocked[cy*GW+nx]||blocked[ny*GW+cx])) continue;
+      const nd=field[i]+(dx&&dy?CELL*1.414:CELL);
+      if(nd<field[j]){field[j]=nd;q.push(j);}
+    }
+  }
+})();
+function pathDist(x,y){
+  const cx=Math.min(GW-1,Math.max(0,x/CELL|0)), cy=Math.min(GH-1,Math.max(0,y/CELL|0));
+  let v=field[cy*GW+cx];
+  if(isFinite(v)) return v;
+  let m=Infinity;
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    const nx=cx+dx,ny=cy+dy; if(nx<0||ny<0||nx>=GW||ny>=GH) continue;
+    m=Math.min(m,field[ny*GW+nx]);
+  }
+  return isFinite(m)?m+CELL:9999;
+}
+function makeRocket(){
+  const r={x:START.x,y:START.y,vx:0,vy:0,alive:true,crashed:false,reached:false,endStep:0,n:1,trail:new Float32Array(STEPS*2+2)};
+  r.trail[0]=START.x; r.trail[1]=START.y; return r;
+}
+function stepRocket(r,genes,s){
+  if(!r.alive) return;
+  const a=genes[(s/BLOCK)|0]/256*TAU;
+  r.vx=(r.vx+Math.cos(a)*ACC)*DRAG; r.vy=(r.vy+Math.sin(a)*ACC)*DRAG;
+  const sp=Math.hypot(r.vx,r.vy); if(sp>MAXV){r.vx*=MAXV/sp;r.vy*=MAXV/sp;}
+  const nx=r.x+r.vx, ny=r.y+r.vy;
+  if(hit(nx,ny)||hit((nx+r.x)/2,(ny+r.y)/2)){r.alive=false;r.crashed=true;r.endStep=s+1;return;}
+  r.x=nx;r.y=ny; r.trail[2*r.n]=nx; r.trail[2*r.n+1]=ny; r.n++;
+  if(Math.hypot(nx-GOAL.x,ny-GOAL.y)<GOAL.r){r.alive=false;r.reached=true;r.endStep=s+1;}
+}
+function rocketDist(r){ return r.reached?0:pathDist(r.x,r.y); }
+function rocketCost(r){
+  return rocketDist(r)+(r.crashed?40:0)-(r.reached?100+(STEPS-r.endStep)*0.5:0);
+}
+function mutateGene(v){
+  return Math.random()<0.5 ? (Math.random()*256|0) : (v+(Math.random()<.5?-1:1)*(1+(Math.random()*12|0))+256)&255;
+}
+// Produces the next generation. parent indices in the result are RANKS (0 = best) in the sorted current pop.
+function breed(pop,costs,rate){
+  const order=[...costs.keys()].sort((a,b)=>costs[a]-costs[b]);
+  const pick=()=>Math.min(Math.random()*POP|0,Math.random()*POP|0,Math.random()*POP|0); // 3-way tournament on rank
+  const children=[];
+  for(let k=0;k<ELITE;k++)
+    children.push({genes:pop[order[k]].genes.slice(),mask:new Uint8Array(GENES),type:'elite',pa:k,pb:k,cut:-1,muts:0});
+  while(children.length<POP){
+    const pa=pick(),pb=pick(), A=pop[order[pa]].genes, B=pop[order[pb]].genes;
+    const cross=Math.random()<0.85, cut=cross?1+(Math.random()*(GENES-1)|0):GENES;
+    const genes=new Uint8Array(GENES), mask=new Uint8Array(GENES); let muts=0;
+    for(let g=0;g<GENES;g++){
+      genes[g]=g<cut?A[g]:B[g];
+      if(Math.random()<rate){genes[g]=mutateGene(genes[g]);mask[g]=1;muts++;}
+    }
+    children.push({genes,mask,type:cross?'cross':'clone',pa,pb:cross?pb:pa,cut:cross?cut:-1,muts});
+  }
+  return {order,children};
+}
+// ==/CORE==
+
+// ---------- UI ----------
+const $=id=>document.getElementById(id);
+function setup(cv,lw,lh){cv.width=lw*2;cv.height=lh*2;const c=cv.getContext('2d');c.scale(2,2);return c;}
+const actx=setup($('arena'),W,H);
+const G={LW:628,LH:334,top:26,RH:5,lx:8,sw:250,rx:370};
+const gctx=setup($('genome'),G.LW,G.LH);
+const fctx=setup($('fit'),628,180);
+const dctx=setup($('div'),628,100);
+
+const STOPS=[[255,210,63],[61,220,151],[74,108,247]];
+function rankRGB(t){
+  const p=t*(STOPS.length-1), i=Math.min(STOPS.length-2,Math.floor(p)), f=p-i, a=STOPS[i], b=STOPS[i+1];
+  return [0,1,2].map(k=>Math.round(a[k]+(b[k]-a[k])*f));
+}
+const rankCss=(t,al=1)=>{const c=rankRGB(t);return `rgba(${c[0]},${c[1]},${c[2]},${al})`;};
+const HUE=Array.from({length:64},(_,i)=>`hsl(${i*360/64},72%,56%)`);
+
+// field glow, rendered once
+const fieldCv=document.createElement('canvas');fieldCv.width=GW;fieldCv.height=GH;
+(function(){
+  const c=fieldCv.getContext('2d'),img=c.createImageData(GW,GH);
+  let mx=0;for(const v of field) if(isFinite(v)) mx=Math.max(mx,v);
+  for(let i=0;i<GW*GH;i++){
+    const v=field[i]; if(!isFinite(v)) continue;
+    const t=1-v/mx; img.data[i*4]=61;img.data[i*4+1]=140;img.data[i*4+2]=220;img.data[i*4+3]=Math.round(10+t*t*70);
+  }
+  c.putImageData(img,0,0);
+})();
+
+// ---------- state ----------
+let pop,rockets,gen,phase,stepsDone,stepF,phaseT,nextPop,lastCosts;
+let paused=false,speed=1,mutRate=0.03,hover=-1,hoverParent=-1,pinned=-1,solvedGen=-1;
+let hist=[],panel,live={colors:[],rank:[]};
+const showField=()=>$('fieldT').checked, showTrails=()=>$('trailT').checked;
+
+function randGenes(){const g=new Uint8Array(GENES);for(let i=0;i<GENES;i++)g[i]=Math.random()*256|0;return g;}
+
+function buildStrip(rows){
+  const c=document.createElement('canvas'); c.width=G.sw*2; c.height=rows.length*G.RH*2;
+  const x=c.getContext('2d'), cw=c.width/GENES, rh=G.RH*2;
+  rows.forEach((r,i)=>{
+    for(let g=0;g<GENES;g++){
+      x.fillStyle=HUE[r.genes[g]>>2];
+      x.fillRect(Math.floor(g*cw),i*rh,Math.ceil(cw),rh-2);
+      if(r.mask&&r.mask[g]){x.fillStyle='#fff';x.fillRect(Math.floor(g*cw)+1,i*rh+2,Math.max(2,Math.ceil(cw)-2),rh-6);}
+    }
+    if(r.cut>0){x.fillStyle='rgba(0,0,0,.9)';x.fillRect(Math.floor(r.cut*cw)-1,i*rh,2,rh-2);}
+  });
+  return c;
+}
+
+function init(){
+  gen=0; hist=[]; $('gallery').innerHTML=''; solvedGen=-1; pinned=-1; hover=-1; hoverParent=-1;
+  pop=Array.from({length:POP},()=>({genes:randGenes(),type:'random',mask:null}));
+  panel={left:null,right:buildStrip(pop),leftColors:[],info:pop,reveal:POP};
+  startFlight(); updateStats();
+}
+function startFlight(){
+  rockets=pop.map(()=>makeRocket()); stepsDone=0; stepF=0; phaseT=0; phase='flight'; updatePhase();
+}
+function updatePhase(){
+  for(const p of ['flight','evaluate','breed']) $('ph-'+p).classList.toggle('on',p===phase);
+}
+const rightIsCurrent=()=>phase!=='breed';
+
+function toEvaluate(){
+  for(const r of rockets) if(r.alive) r.endStep=STEPS;
+  lastCosts=rockets.map(rocketCost);
+  const dists=rockets.map(rocketDist);
+  const bi=lastCosts.indexOf(Math.min(...lastCosts));
+  const sorted=[...dists].sort((a,b)=>a-b), q=f=>sorted[Math.min(POP-1,Math.floor(f*(POP-1)))];
+  let d=0,n=0;
+  for(let k=0;k<80;k++){
+    const a=pop[Math.random()*POP|0].genes,b=pop[Math.random()*POP|0].genes; if(a===b) continue;
+    let df=0;for(let g=0;g<GENES;g++) if((a[g]>>3)!==(b[g]>>3)) df++; d+=df/GENES;n++;
+  }
+  const br=rockets[bi], reached=rockets.filter(r=>r.reached).length;
+  const h={gen,best:dists[bi],mean:dists.reduce((s,v)=>s+v,0)/POP,p10:q(.1),p90:q(.9),reached,div:n?d/n:0,
+           trail:br.trail.slice(0,br.n*2),n:br.n,ok:br.reached};
+  hist.push(h);
+  if(solvedGen<0&&reached>0) solvedGen=gen;
+  addCard(h); phase='evaluate'; phaseT=0; updatePhase(); updateStats();
+}
+function toBreed(){
+  const res=breed(pop,lastCosts,mutRate);
+  panel.left=buildStrip(res.order.map(i=>({genes:pop[i].genes})));
+  panel.leftColors=res.order.map((_,k)=>rankCss(k/(POP-1)));
+  panel.right=buildStrip(res.children); panel.info=res.children; panel.reveal=0;
+  nextPop=res.children; phase='breed'; phaseT=0; hover=-1; updatePhase();
+}
+function finishBreed(){
+  pop=nextPop; gen++; panel.reveal=POP; hover=-1; startFlight(); updateStats();
+}
+function flightDone(){ return stepsDone>=STEPS||rockets.every(r=>!r.alive); }
+
+function advance(dt){
+  if(phase==='flight'){
+    stepF+=2*speed;
+    while(stepsDone<Math.floor(stepF)&&!flightDone()){
+      for(let i=0;i<POP;i++) stepRocket(rockets[i],pop[i].genes,stepsDone);
+      stepsDone++;
+    }
+    if(flightDone()) toEvaluate();
+  }else if(phase==='evaluate'){
+    phaseT+=dt; if(phaseT>1100/speed) toBreed();
+  }else{
+    phaseT+=dt; const dur=2200/speed;
+    panel.reveal=Math.min(POP,Math.floor(phaseT/dur*POP*1.15));
+    if(phaseT>dur+400/speed) finishBreed();
+  }
+}
+function skip(){
+  if(phase==='flight'){
+    while(!flightDone()){for(let i=0;i<POP;i++)stepRocket(rockets[i],pop[i].genes,stepsDone);stepsDone++;}
+    toEvaluate();
+  }else if(phase==='evaluate') toBreed();
+  else finishBreed();
+}
+
+function updateStats(){
+  const h=hist[hist.length-1];
+  $('sGen').textContent=gen;
+  $('sBest').textContent=h?Math.round(h.best)+' px':'–';
+  $('sMean').textContent=h?Math.round(h.mean)+' px':'–';
+  $('sReach').textContent=h?h.reached+' / '+POP:'–';
+  const s=$('sSolved');
+  if(solvedGen>=0){s.textContent='solved @ gen '+solvedGen;s.className='solved';}
+  else{s.textContent='searching';s.className='';}
+}
+
+// ---------- gallery ----------
+function drawMini(cv,h){
+  const c=cv.getContext('2d');c.setTransform(1,0,0,1,0,0);
+  const S=cv.width/W;c.scale(S,S);c.fillStyle='#0b0f14';c.fillRect(0,0,W,H);
+  c.fillStyle='#39414b';for(const w of WALLS)c.fillRect(w.x,w.y,w.w,w.h);
+  c.fillStyle='rgba(61,220,151,.35)';c.beginPath();c.arc(GOAL.x,GOAL.y,GOAL.r,0,TAU);c.fill();
+  c.strokeStyle=h.ok?'#3ddc97':'#58a6ff';c.lineWidth=3/S*1.2;c.lineJoin='round';c.beginPath();
+  for(let i=0;i<h.n;i++)i?c.lineTo(h.trail[2*i],h.trail[2*i+1]):c.moveTo(h.trail[0],h.trail[1]);c.stroke();
+}
+function addCard(h){
+  const d=document.createElement('div');d.className='gcard'+(h.ok?' ok':'');
+  const cv=document.createElement('canvas');cv.width=320;cv.height=240;
+  const lab=document.createElement('div');lab.textContent=`gen ${h.gen} · ${Math.round(h.best)} px`;
+  d.append(cv,lab);drawMini(cv,h);
+  d.onclick=()=>{pinned=pinned===h.gen?-1:h.gen;document.querySelectorAll('.gcard').forEach((e,i)=>e.classList.toggle('pin',i===pinned));};
+  const g=$('gallery');g.appendChild(d);g.scrollLeft=g.scrollWidth;
+}
+
+// ---------- arena drawing ----------
+function computeLive(){
+  const cs=rockets.map(rocketCost), idx=[...cs.keys()].sort((a,b)=>cs[a]-cs[b]);
+  idx.forEach((j,k)=>{live.rank[j]=k;live.colors[j]=rankCss(k/(POP-1));});
+}
+function trailPath(c,r,n){
+  c.beginPath();for(let i=0;i<n;i++)i?c.lineTo(r.trail[2*i],r.trail[2*i+1]):c.moveTo(r.trail[0],r.trail[1]);
+}
+function drawArena(){
+  const c=actx; c.clearRect(0,0,W,H); c.fillStyle='#0b0f14';c.fillRect(0,0,W,H);
+  if(showField()){c.imageSmoothingEnabled=true;c.drawImage(fieldCv,0,0,W,H);}
+  c.fillStyle='#2b323b';c.strokeStyle='#57606a';c.lineWidth=1;
+  for(const w of WALLS){c.fillRect(w.x,w.y,w.w,w.h);c.strokeRect(w.x+.5,w.y+.5,w.w-1,w.h-1);}
+  // goal
+  const pulse=(performance.now()/900)%1;
+  c.strokeStyle='rgba(61,220,151,'+(0.6*(1-pulse))+')';c.lineWidth=2;c.beginPath();c.arc(GOAL.x,GOAL.y,GOAL.r+pulse*16,0,TAU);c.stroke();
+  c.fillStyle='#3ddc97';c.beginPath();c.arc(GOAL.x,GOAL.y,GOAL.r*.55,0,TAU);c.fill();
+  c.strokeStyle='#3ddc97';c.lineWidth=2;c.beginPath();c.arc(GOAL.x,GOAL.y,GOAL.r,0,TAU);c.stroke();
+  c.fillStyle='#8b949e';c.beginPath();c.arc(START.x,START.y,4,0,TAU);c.fill();
+  c.fillStyle='#8b949e';c.font='11px sans-serif';c.fillText('start',START.x+8,START.y+4);c.fillText('goal',GOAL.x+GOAL.r+6,GOAL.y+4);
+
+  // previous best path (ghost)
+  const prev=hist.length&&(phase==='flight')?hist[hist.length-1]:null;
+  if(prev){
+    c.setLineDash([5,5]);c.strokeStyle='rgba(230,237,243,.45)';c.lineWidth=1.5;
+    c.beginPath();for(let i=0;i<prev.n;i++)i?c.lineTo(prev.trail[2*i],prev.trail[2*i+1]):c.moveTo(prev.trail[0],prev.trail[1]);c.stroke();c.setLineDash([]);
+  }
+  computeLive();
+  const hl=rightIsCurrent()?hover:-1, retired=phase==='breed';
+  c.globalAlpha=retired?0.3:1;
+  const order=[...rockets.keys()].sort((a,b)=>live.rank[b]-live.rank[a]); // best drawn last (on top)
+  for(const j of order){
+    const r=rockets[j], t=live.rank[j]/(POP-1), col=rankRGB(t);
+    const dim=hl>=0&&hl!==j;
+    if(showTrails()||hl===j){
+      c.lineJoin='round';c.lineWidth=hl===j?2.6:1.4;
+      c.strokeStyle=`rgba(${col[0]},${col[1]},${col[2]},${dim?.08:hl===j?1:.32+.3*(1-t)})`;
+      trailPath(c,r,r.n);c.stroke();
+    }
+  }
+  for(const j of order){
+    const r=rockets[j], col=rankRGB(live.rank[j]/(POP-1)), dim=hl>=0&&hl!==j;
+    c.globalAlpha=(retired?.3:1)*(dim?.25:1);
+    const fx=r.x,fy=r.y;
+    if(r.crashed){
+      c.strokeStyle='rgba(248,81,73,.9)';c.lineWidth=1.5;const cx=fx,cy=fy;
+      c.beginPath();c.moveTo(cx-3,cy-3);c.lineTo(cx+3,cy+3);c.moveTo(cx+3,cy-3);c.lineTo(cx-3,cy+3);c.stroke();
+    }else{
+      const ang=Math.atan2(r.vy,r.vx);
+      c.save();c.translate(fx,fy);c.rotate(ang);c.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
+      c.beginPath();c.moveTo(6,0);c.lineTo(-4,3.5);c.lineTo(-4,-3.5);c.closePath();c.fill();c.restore();
+    }
+    if(pop[j].type==='elite'){c.strokeStyle='#fff';c.lineWidth=1.5;c.beginPath();c.arc(fx,fy,7.5,0,TAU);c.stroke();}
+  }
+  c.globalAlpha=1;
+  // pinned overlay
+  if(pinned>=0&&hist[pinned]){
+    const h=hist[pinned];c.strokeStyle='#fff';c.lineWidth=2.5;c.lineJoin='round';
+    c.beginPath();for(let i=0;i<h.n;i++)i?c.lineTo(h.trail[2*i],h.trail[2*i+1]):c.moveTo(h.trail[0],h.trail[1]);c.stroke();
+    c.fillStyle='#fff';c.font='12px sans-serif';c.fillText('gen '+h.gen+' best · '+Math.round(h.best)+' px',W-160,H-12);
+  }
+  // step counter
+  c.fillStyle='#8b949e';c.font='11px sans-serif';
+  c.fillText(`gen ${gen} · step ${Math.min(stepsDone,STEPS)}/${STEPS}`,W-118,16);
+}
+
+// ---------- genome panel ----------
+function drawGenome(){
+  const c=gctx,{LW,LH,top,RH,lx,sw,rx}=G; c.clearRect(0,0,LW,LH);
+  c.font='11px sans-serif';c.fillStyle='#8b949e';
+  c.fillText(gen>0||panel.left?`Gen ${phase==='breed'?gen:gen-1} · ranked`:'',lx,16);
+  c.textAlign='right';c.fillText(phase==='breed'?`Gen ${gen+1} offspring`:`Gen ${gen} (current)`,rx+sw,16);c.textAlign='left';
+  const mid=(lx+sw+rx)/2;c.textAlign='center';c.fillText('selection · crossover',mid,16);c.textAlign='left';
+  const rows=POP*RH;
+  // left
+  if(panel.left){
+    c.drawImage(panel.left,lx,top,sw,rows);
+    for(let k=0;k<POP;k++){c.fillStyle=panel.leftColors[k];c.fillRect(0,top+k*RH,5,RH-1);}
+  }else{
+    c.fillStyle='#21262d';c.fillRect(lx,top,sw,rows);
+    c.fillStyle='#8b949e';c.textAlign='center';c.fillText('random initial population',lx+sw/2,top+rows/2);c.textAlign='left';
+  }
+  // right
+  const cur=rightIsCurrent(), k=cur?POP:panel.reveal;
+  if(k>0) c.drawImage(panel.right,0,0,panel.right.width,k*RH*2,rx,top,sw,k*RH);
+  if(k<POP){c.globalAlpha=.14;c.drawImage(panel.right,0,k*RH*2,panel.right.width,(POP-k)*RH*2,rx,top+k*RH,sw,(POP-k)*RH);c.globalAlpha=1;}
+  if(cur){
+    for(let j=0;j<POP;j++){
+      c.fillStyle=live.colors[j]||'#444';c.fillRect(rx+sw+4,top+j*RH,5,RH-1);
+      const r=rockets[j],start=r.alive?stepsDone:r.endStep;
+      if(start<STEPS){c.fillStyle='rgba(13,17,23,.62)';const x0=rx+sw*start/STEPS;c.fillRect(x0,top+j*RH,rx+sw-x0,RH-1);}
+    }
+    if(phase==='flight'){const x=rx+sw*stepsDone/STEPS;c.fillStyle='#fff';c.fillRect(x-.5,top-3,1.5,rows+6);}
+  }
+  // links
+  if(panel.left&&panel.info&&panel.info[0].pa!==undefined){
+    const xa=lx+sw,xb=rx,n=phase==='breed'?panel.reveal:POP;
+    const active=hover>=0||hoverParent>=0;
+    for(let j=0;j<n;j++){
+      const ch=panel.info[j],yb=top+j*RH+RH/2;
+      for(const side of (ch.type==='elite'?[0]:[0,1])){
+        const p=side?ch.pb:ch.pa;if(side&&ch.pb===ch.pa)continue;
+        const ya=top+p*RH+RH/2, lit=hover===j||hoverParent===p&&(hoverParent===ch.pa||hoverParent===ch.pb);
+        const hl=(hover===j)||(hoverParent>=0&&(ch.pa===hoverParent||ch.pb===hoverParent));
+        c.setLineDash(side?[3,3]:[]);
+        c.lineWidth=hl?1.8:ch.type==='elite'?1.6:.8;
+        c.strokeStyle=ch.type==='elite'?(active&&!hl?'rgba(255,255,255,.12)':'rgba(255,255,255,.8)')
+          :hl?rankCss(p/(POP-1),1):rankCss(p/(POP-1),active?.06:.28);
+        c.beginPath();c.moveTo(xa,ya);c.bezierCurveTo(xa+55,ya,xb-55,yb,xb,yb);c.stroke();
+      }
+    }
+    c.setLineDash([]);
+  }
+  if(hover>=0&&cur){c.strokeStyle='#fff';c.lineWidth=1;c.strokeRect(rx-.5,top+hover*RH-.5,sw+1,RH+1);}
+  if(hover>=0&&!cur&&hover<panel.reveal){c.strokeStyle='#fff';c.lineWidth=1;c.strokeRect(rx-.5,top+hover*RH-.5,sw+1,RH+1);}
+  if(hoverParent>=0){c.strokeStyle='#fff';c.lineWidth=1;c.strokeRect(lx-.5,top+hoverParent*RH-.5,sw+1,RH+1);}
+  updateCaption();
+}
+function updateCaption(){
+  const el=$('caption');let t;
+  if(hover>=0&&panel.info){
+    const ch=panel.info[hover];
+    if(ch.type==='elite') t=`<b>Row ${hover}</b> · elite: an unmodified copy of the rank-${ch.pa+1} rocket, so the best solution is never lost.`;
+    else if(ch.type==='cross') t=`<b>Row ${hover}</b> · child of rank ${ch.pa+1} (solid line) × rank ${ch.pb+1} (dashed). Genes 1–${ch.cut} come from the first parent, the rest from the second (black tick). ${ch.muts} mutation${ch.muts===1?'':'s'} (white).`;
+    else if(ch.type==='clone') t=`<b>Row ${hover}</b> · clone of rank ${ch.pa+1} with ${ch.muts} mutation${ch.muts===1?'':'s'} (white).`;
+    else t=`<b>Row ${hover}</b> · random founder.`;
+  }else if(hoverParent>=0&&panel.info&&panel.info[0].pa!==undefined){
+    const k=panel.info.filter(c=>c.pa===hoverParent||c.pb===hoverParent).length;
+    t=`<b>Rank ${hoverParent+1}</b> parent · contributed to ${k} of ${POP} offspring.`;
+  }else t='Hover a row to trace its ancestry; hover a parent on the left to see its offspring. White cells = mutations.';
+  if(el._t!==t){el.innerHTML=t;el._t=t;}
+}
+
+// ---------- charts ----------
+function frame(c,LW,LH,xmax,ymax,fmt){
+  c.clearRect(0,0,LW,LH);const l=44,r=12,t=10,b=22,pw=LW-l-r,ph=LH-t-b;
+  c.font='11px sans-serif';c.fillStyle='#8b949e';c.strokeStyle='#30363d';c.lineWidth=1;
+  for(let i=0;i<=4;i++){
+    const y=t+ph*i/4;c.beginPath();c.moveTo(l,y+.5);c.lineTo(l+pw,y+.5);c.stroke();
+    c.textAlign='right';c.fillText(fmt(ymax*(1-i/4)),l-6,y+4);
+  }
+  c.textAlign='center';const stepX=Math.max(1,Math.ceil(xmax/8));
+  for(let x=0;x<=xmax;x+=stepX)c.fillText(x,l+pw*x/xmax,LH-6);
+  c.textAlign='left';
+  return{X:x=>l+pw*x/xmax,Y:y=>t+ph*(1-y/ymax)};
+}
+function line(c,pts,color,w){
+  c.strokeStyle=color;c.lineWidth=w;c.lineJoin='round';c.beginPath();
+  pts.forEach((p,i)=>i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]));c.stroke();
+}
+function drawCharts(){
+  const xmax=Math.max(10,hist.length-1);
+  let ymax=100;for(const h of hist)ymax=Math.max(ymax,h.p90,h.mean);ymax=Math.ceil(ymax/100)*100;
+  let m=frame(fctx,628,180,xmax,ymax,v=>Math.round(v));
+  if(hist.length){
+    fctx.fillStyle='rgba(88,166,255,.14)';fctx.beginPath();
+    hist.forEach((h,i)=>i?fctx.lineTo(m.X(i),m.Y(h.p90)):fctx.moveTo(m.X(i),m.Y(h.p90)));
+    for(let i=hist.length-1;i>=0;i--)fctx.lineTo(m.X(i),m.Y(hist[i].p10));fctx.closePath();fctx.fill();
+    line(fctx,hist.map((h,i)=>[m.X(i),m.Y(h.mean)]),'#58a6ff',2);
+    line(fctx,hist.map((h,i)=>[m.X(i),m.Y(h.best)]),'#3ddc97',2);
+    const last=hist[hist.length-1];fctx.fillStyle='#3ddc97';fctx.beginPath();fctx.arc(m.X(hist.length-1),m.Y(last.best),3.5,0,TAU);fctx.fill();
+    if(solvedGen>=0){fctx.setLineDash([4,4]);fctx.strokeStyle='#3ddc97';fctx.beginPath();fctx.moveTo(m.X(solvedGen),10);fctx.lineTo(m.X(solvedGen),158);fctx.stroke();fctx.setLineDash([]);
+      fctx.fillStyle='#3ddc97';fctx.fillText('first solved',m.X(solvedGen)+5,22);}
+    fctx.font='11px sans-serif';fctx.fillStyle='#3ddc97';fctx.fillText('best',52,22);fctx.fillStyle='#58a6ff';fctx.fillText('mean',90,22);
+  }
+  m=frame(dctx,628,100,xmax,1,v=>v.toFixed(1));
+  if(hist.length){
+    line(dctx,hist.map((h,i)=>[m.X(i),m.Y(h.div)]),'#a78bfa',2);
+    const last=hist[hist.length-1];dctx.fillStyle='#a78bfa';dctx.beginPath();dctx.arc(m.X(hist.length-1),m.Y(last.div),3.5,0,TAU);dctx.fill();
+  }
+}
+
+// ---------- interaction ----------
+function pos(e,cv){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}
+$('arena').addEventListener('mousemove',e=>{
+  const[nx,ny]=pos(e,$('arena')),x=nx*W,y=ny*H;let best=-1,bd=16;
+  if(rightIsCurrent())rockets.forEach((r,j)=>{const d=Math.hypot(r.x-x,r.y-y);if(d<bd){bd=d;best=j;}});
+  hover=best;
+});
+$('arena').addEventListener('mouseleave',()=>hover=-1);
+$('genome').addEventListener('mousemove',e=>{
+  const[nx,ny]=pos(e,$('genome')),x=nx*G.LW,y=ny*G.LH,row=Math.floor((y-G.top)/G.RH);
+  hover=-1;hoverParent=-1;
+  if(row<0||row>=POP)return;
+  if(x>=G.rx&&x<=G.rx+G.sw+12)hover=row;
+  else if(x<=G.lx+G.sw&&panel.left)hoverParent=row;
+});
+$('genome').addEventListener('mouseleave',()=>{hover=-1;hoverParent=-1;});
+function togglePlay(){paused=!paused;$('play').textContent=paused?'Play':'Pause';}
+$('play').onclick=togglePlay;
+$('step').onclick=skip;
+$('reset').onclick=init;
+$('speed').oninput=e=>{speed=+e.target.value;$('speedV').textContent=speed+'×';};
+$('mut').oninput=e=>{mutRate=e.target.value/100;$('mutV').textContent=e.target.value+'%';};
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();togglePlay();}
+  else if(e.code==='ArrowRight')skip();
+});
+
+let last=performance.now();
+function loop(t){
+  const dt=Math.min(100,t-last);last=t;
+  if(!paused)advance(dt);
+  drawArena();drawGenome();drawCharts();
+  requestAnimationFrame(loop);
+}
+init();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
