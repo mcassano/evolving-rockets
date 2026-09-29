@@ -161,7 +161,7 @@ function pathDist(x,y){
   return isFinite(m)?m+CELL:9999;
 }
 function makeRocket(){
-  const r={x:START.x,y:START.y,vx:0,vy:0,alive:true,crashed:false,reached:false,endStep:0,n:1,trail:new Float32Array(STEPS*2+2)};
+  const r={x:START.x,y:START.y,vx:0,vy:0,alive:true,crashed:false,reached:false,endStep:0,n:1,bestD:pathDist(START.x,START.y),trail:new Float32Array(STEPS*2+2)};
   r.trail[0]=START.x; r.trail[1]=START.y; return r;
 }
 function stepRocket(r,genes,s){
@@ -172,9 +172,10 @@ function stepRocket(r,genes,s){
   const nx=r.x+r.vx, ny=r.y+r.vy;
   if(hit(nx,ny)||hit((nx+r.x)/2,(ny+r.y)/2)){r.alive=false;r.crashed=true;r.endStep=s+1;return;}
   r.x=nx;r.y=ny; r.trail[2*r.n]=nx; r.trail[2*r.n+1]=ny; r.n++;
+  const d=pathDist(nx,ny); if(d<r.bestD) r.bestD=d;
   if(Math.hypot(nx-GOAL.x,ny-GOAL.y)<GOAL.r){r.alive=false;r.reached=true;r.endStep=s+1;}
 }
-function rocketDist(r){ return r.reached?0:pathDist(r.x,r.y); }
+function rocketDist(r){ return r.reached?0:r.bestD; } // closest approach along the flight, so late wandering isn't punished
 function rocketCost(r){
   return rocketDist(r)+(r.crashed?40:0)-(r.reached?100+(STEPS-r.endStep)*0.5:0);
 }
@@ -182,19 +183,29 @@ function mutateGene(v){
   return Math.random()<0.5 ? (Math.random()*256|0) : (v+(Math.random()<.5?-1:1)*(1+(Math.random()*12|0))+256)&255;
 }
 // Produces the next generation. parent indices in the result are RANKS (0 = best) in the sorted current pop.
-function breed(pop,costs,rate){
+// ends[i] = step at which rocket i stopped (crash / goal / timeout). Genes after that were never expressed, and
+// genes long before it are already tuned, so mutation is concentrated on the genes just before the failure point.
+const HOT=8; // genes (x BLOCK steps) before the end point that receive most mutations
+function breed(pop,costs,rate,ends){
   const order=[...costs.keys()].sort((a,b)=>costs[a]-costs[b]);
   const pick=()=>Math.min(Math.random()*POP|0,Math.random()*POP|0,Math.random()*POP|0); // 3-way tournament on rank
+  const last=i=>Math.min(GENES-1,Math.max(0,Math.ceil(ends[order[i]]/BLOCK)-1)); // last expressed gene of a parent
   const children=[];
   for(let k=0;k<ELITE;k++)
     children.push({genes:pop[order[k]].genes.slice(),mask:new Uint8Array(GENES),type:'elite',pa:k,pb:k,cut:-1,muts:0});
+  const w=new Float32Array(GENES);
   while(children.length<POP){
     const pa=pick(),pb=pick(), A=pop[order[pa]].genes, B=pop[order[pb]].genes;
     const cross=Math.random()<0.85, cut=cross?1+(Math.random()*(GENES-1)|0):GENES;
-    const genes=new Uint8Array(GENES), mask=new Uint8Array(GENES); let muts=0;
+    const genes=new Uint8Array(GENES), mask=new Uint8Array(GENES); let muts=0, tot=0;
     for(let g=0;g<GENES;g++){
       genes[g]=g<cut?A[g]:B[g];
-      if(Math.random()<rate){genes[g]=mutateGene(genes[g]);mask[g]=1;muts++;}
+      const L=last(g<cut?pa:pb);
+      w[g]=g>L?0.05:g>L-HOT?1:0.1; tot+=w[g];
+    }
+    const budget=rate*GENES; // expected mutations per child, same as a uniform per-gene rate
+    for(let g=0;g<GENES;g++){
+      if(Math.random()<budget*w[g]/tot){genes[g]=mutateGene(genes[g]);mask[g]=1;muts++;}
     }
     children.push({genes,mask,type:cross?'cross':'clone',pa,pb:cross?pb:pa,cut:cross?cut:-1,muts});
   }
@@ -286,7 +297,7 @@ function toEvaluate(){
   addCard(h); phase='evaluate'; phaseT=0; updatePhase(); updateStats();
 }
 function toBreed(){
-  const res=breed(pop,lastCosts,mutRate);
+  const res=breed(pop,lastCosts,mutRate,rockets.map(r=>r.endStep));
   panel.left=buildStrip(res.order.map(i=>({genes:pop[i].genes})));
   panel.leftColors=res.order.map((_,k)=>rankCss(k/(POP-1)));
   panel.right=buildStrip(res.children); panel.info=res.children; panel.reveal=0;

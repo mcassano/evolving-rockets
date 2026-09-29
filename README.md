@@ -14,11 +14,13 @@ Each generation cycles through three phases:
 1. **Flight** – every rocket flies its own genome: 150 thrust directions, each
    held for 6 steps.
 2. **Evaluate** – rockets are scored by shortest path distance to the goal
-   (routing around walls, not straight-line distance), with a penalty for
-   crashing and a bonus for arriving early.
+   (routing around walls, not straight-line distance) at its closest approach
+   during the flight, with a penalty for crashing and a bonus for arriving early.
 3. **Select & breed** – parents are picked by tournament selection, combined
    with single-point crossover, and mutated. The top few rockets (elites) are
-   copied over unchanged.
+   copied over unchanged. Mutations are concentrated on the genes just before
+   the point where each parent crashed (later genes were never expressed, and
+   earlier ones are already tuned), which helps the population escape dead ends.
 
 Panels show:
 
