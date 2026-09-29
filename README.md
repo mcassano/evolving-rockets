@@ -31,6 +31,18 @@ Panels show:
   population diversity over generations.
 - **Gallery** – the best rocket of every generation; click one to overlay it.
 
+## Mazes
+
+Pick a maze type and hit **New maze** to generate a fresh layout:
+
+- **Classic** – the original three-wall serpentine.
+- **Serpentine** – random wall count, gap positions and widths.
+- **Scattered** – random rectangles, rejected unless a wide-enough route exists.
+- **Labyrinth** – a depth-first-search maze on a grid, with the goal placed far from the start.
+
+The maze is stored in the URL (`#maze=labyrinth&seed=101`), so a layout can be
+shared or replayed.
+
 ## Controls
 
 | Control | Action |

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Evolving Rockets</title>
+<title>GA Visualizer</title>
 <style>
 :root{
   --bg:#0d1117; --panel:#161b22; --line:#30363d; --text:#e6edf3; --mute:#8b949e;
@@ -35,6 +35,8 @@ canvas{display:block;width:100%;height:auto;border-radius:4px}
 .controls{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-top:12px}
 button{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
 button:hover{background:#30363d}
+select{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+.seed{color:var(--mute);font-size:12px;font-variant-numeric:tabular-nums}
 button.primary{background:var(--blue);border-color:var(--blue);color:#06101f;font-weight:600;min-width:84px}
 label{display:flex;align-items:center;gap:6px;color:var(--mute);font-size:12px}
 input[type=range]{width:110px}
@@ -52,7 +54,7 @@ input[type=range]{width:110px}
 </head>
 <body>
 <header>
-  <h1>Genetic Algorithm <span>· evolving rockets through a serpentine maze</span></h1>
+  <h1>Genetic Algorithm <span>· evolving rockets through a maze</span></h1>
   <div class="stats">
     <div class="stat"><small>Generation</small><b id="sGen">0</b></div>
     <div class="stat"><small>Best distance</small><b id="sBest">–</b></div>
@@ -81,6 +83,8 @@ input[type=range]{width:110px}
         <button id="reset">Reset</button>
         <label>Speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span id="speedV">1×</span></label>
         <label>Mutation <input id="mut" type="range" min="0" max="10" step="0.5" value="3"><span id="mutV">3%</span></label>
+        <label>Maze <select id="mazeType"><option value="classic">Classic</option><option value="serpentine">Serpentine</option><option value="scattered">Scattered</option><option value="labyrinth">Labyrinth</option></select></label>
+        <button id="newMaze" title="Generate a new random maze">New maze</button><span id="seedV" class="seed"></span>
         <label><input id="fieldT" type="checkbox" checked> distance field</label>
         <label><input id="trailT" type="checkbox" checked> trails</label>
       </div>
@@ -114,28 +118,32 @@ input[type=range]{width:110px}
 
 <script>
 // ==CORE==
-const W=640,H=480,STEPS=900,BLOCK=6,GENES=STEPS/BLOCK,POP=60,ELITE=3,CELL=8,GW=W/CELL,GH=H/CELL;
+const W=640,H=480,STEPS=900,BLOCK=6,GENES=STEPS/BLOCK,POP=60,ELITE=3,CELL=8,GW=W/CELL,GH=H/CELL,RES=2,SW=W/RES,SH=H/RES;
 const MAXV=5,ACC=0.6,DRAG=0.96,TAU=Math.PI*2;
 const START={x:40,y:440}, GOAL={x:585,y:130,r:14};
-const WALLS=[
-  {x:0,  y:370,w:560,h:14},   // serpentine: gaps alternate right / left / right
-  {x:80, y:280,w:560,h:14},
-  {x:0,  y:190,w:560,h:14},
-];
-function hit(x,y){
-  if(x<0||y<0||x>W||y>H) return true;
-  for(const w of WALLS) if(x>=w.x&&x<=w.x+w.w&&y>=w.y&&y<=w.y+w.h) return true;
-  return false;
+let WALLS=[], solid, field, blocked; // the current maze; swap with setMaze()
+
+// ---------- mazes ----------
+// A maze is {type,seed,start,goal,walls:[{x,y,w,h}]}. Coordinates are even so they line up with the collision raster.
+const ev=v=>Math.round(v/2)*2;
+function rng(seed){ // small seeded PRNG so a (type, seed) pair always gives the same maze
+  let a=seed>>>0;
+  return()=>{a=(a+0x6D2B79F5)>>>0;let t=a;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;};
 }
-// Path-distance field: shortest route to the goal around walls (Dijkstra-style relaxation on a grid).
-const field=new Float32Array(GW*GH).fill(Infinity), blocked=new Uint8Array(GW*GH);
-(function buildField(){
-  const pad=5;
+// Rasterises walls (fast collision + ray casting) and builds the path-distance field: the shortest route to the
+// goal around walls (breadth-first relaxation on a grid). `pad` keeps the route clear of wall edges.
+function compile(m,pad=5){
+  const solid=new Uint8Array(SW*SH), blocked=new Uint8Array(GW*GH), field=new Float32Array(GW*GH).fill(Infinity);
+  for(const w of m.walls){
+    const x0=Math.max(0,Math.floor(w.x/RES)),x1=Math.min(SW,Math.ceil((w.x+w.w)/RES));
+    const y0=Math.max(0,Math.floor(w.y/RES)),y1=Math.min(SH,Math.ceil((w.y+w.h)/RES));
+    if(x1>x0) for(let y=y0;y<y1;y++) solid.fill(1,y*SW+x0,y*SW+x1);
+  }
   for(let cy=0;cy<GH;cy++)for(let cx=0;cx<GW;cx++){
     const x0=cx*CELL,y0=cy*CELL,x1=x0+CELL,y1=y0+CELL;
-    for(const w of WALLS) if(x1>w.x-pad&&x0<w.x+w.w+pad&&y1>w.y-pad&&y0<w.y+w.h+pad){blocked[cy*GW+cx]=1;break;}
+    for(const w of m.walls) if(x1>w.x-pad&&x0<w.x+w.w+pad&&y1>w.y-pad&&y0<w.y+w.h+pad){blocked[cy*GW+cx]=1;break;}
   }
-  const g=Math.floor(GOAL.y/CELL)*GW+Math.floor(GOAL.x/CELL); field[g]=0;
+  const g=Math.floor(m.goal.y/CELL)*GW+Math.floor(m.goal.x/CELL); field[g]=0;
   const q=[g]; let head=0;
   while(head<q.length){
     const i=q[head++], cx=i%GW, cy=(i/GW)|0;
@@ -148,7 +156,78 @@ const field=new Float32Array(GW*GH).fill(Infinity), blocked=new Uint8Array(GW*GH
       if(nd<field[j]){field[j]=nd;q.push(j);}
     }
   }
-})();
+  return {solid,blocked,field};
+}
+function setMaze(m){
+  if(!m.c) m.c=compile(m);
+  ({solid,blocked,field}=m.c); WALLS=m.walls;
+  START.x=m.start.x;START.y=m.start.y; GOAL.x=m.goal.x;GOAL.y=m.goal.y;
+}
+// Solvable with room to spare (passages >= ~28px) and not a straight shot from start to goal.
+function playable(m){
+  const f=compile(m,14).field, d=f[Math.floor(m.start.y/CELL)*GW+Math.floor(m.start.x/CELL)];
+  return isFinite(d)&&d>1.3*Math.hypot(m.start.x-m.goal.x,m.start.y-m.goal.y);
+}
+function genSerpentine(r){
+  const n=2+(r()*3|0), th=12+2*(r()*3|0), top=130, bot=380, walls=[];
+  let right=r()<.5;
+  for(let i=0;i<n;i++){
+    const y=ev(bot-(bot-top)*i/(n-1)+(r()-.5)*12), gw=ev(70+r()*50);
+    const cx=right?ev(400+r()*(W-400-gw/2-16)):ev(gw/2+16+r()*(240-gw/2-16)); right=!right;
+    if(cx-gw/2>0) walls.push({x:0,y,w:cx-gw/2,h:th});
+    if(cx+gw/2<W) walls.push({x:cx+gw/2,y,w:W-(cx+gw/2),h:th});
+  }
+  return {start:{x:ev(40+r()*560),y:440},goal:{x:ev(40+r()*560),y:ev(40+r()*50)},walls};
+}
+function genScattered(r){
+  for(let attempt=0;attempt<60;attempt++){
+    const start={x:ev(40+r()*80),y:440}, goal={x:ev(480+r()*120),y:ev(40+r()*90)}, walls=[], n=9+(r()*6|0);
+    for(let i=0;i<n;i++){
+      const horiz=r()<.6, w=ev(horiz?80+r()*170:12+r()*8), h=ev(horiz?12+r()*8:80+r()*130);
+      const x=ev(r()*(W-w)), y=ev(50+r()*(H-100-h));
+      const near=p=>p.x>x-34&&p.x<x+w+34&&p.y>y-34&&p.y<y+h+34;
+      if(near(start)||near(goal)) continue;
+      walls.push({x,y,w,h});
+    }
+    const m={start,goal,walls}; if(playable(m)) return m;
+  }
+  return genSerpentine(r);
+}
+function genLabyrinth(r){
+  const C=8,R=6,S=80,t=12; // grid cells; walls sit on the grid lines
+  const open=new Set(), key=(a,b)=>a<b?a+'|'+b:b+'|'+a, id=(c,rw)=>rw*C+c;
+  const seen=new Set([id(0,R-1)]), stack=[[0,R-1]];
+  const nbrs=(c,rw)=>[[c+1,rw],[c-1,rw],[c,rw+1],[c,rw-1]].filter(([x,y])=>x>=0&&y>=0&&x<C&&y<R);
+  while(stack.length){ // depth-first carve
+    const [c,rw]=stack[stack.length-1], nb=nbrs(c,rw).filter(([x,y])=>!seen.has(id(x,y)));
+    if(!nb.length){stack.pop();continue;}
+    const [x,y]=nb[r()*nb.length|0]; open.add(key(id(c,rw),id(x,y))); seen.add(id(x,y)); stack.push([x,y]);
+  }
+  for(let c=0;c<C;c++)for(let rw=0;rw<R;rw++)for(const [x,y] of nbrs(c,rw)) if(r()<.04) open.add(key(id(c,rw),id(x,y))); // loops
+  const dist=new Map([[id(0,R-1),0]]), q=[[0,R-1]];
+  for(let h=0;h<q.length;h++){const [c,rw]=q[h];for(const [x,y] of nbrs(c,rw)) if(!dist.has(id(x,y))&&open.has(key(id(c,rw),id(x,y)))){dist.set(id(x,y),dist.get(id(c,rw))+1);q.push([x,y]);}}
+  let goalCell=id(0,R-1),gd=0; for(const [k,d] of dist) if(d<=30&&d>gd){gd=d;goalCell=k;} // the farthest cell, capped so it stays reachable in the step budget
+  const walls=[];
+  for(let c=0;c<C;c++)for(let rw=0;rw<R;rw++){
+    if(c<C-1&&!open.has(key(id(c,rw),id(c+1,rw)))) walls.push({x:(c+1)*S-t/2,y:rw*S-t/2,w:t,h:S+t});
+    if(rw<R-1&&!open.has(key(id(c,rw),id(c,rw+1)))) walls.push({x:c*S-t/2,y:(rw+1)*S-t/2,w:S+t,h:t});
+  }
+  return {start:{x:40,y:440},goal:{x:(goalCell%C)*S+S/2,y:((goalCell/C)|0)*S+S/2},walls};
+}
+function makeMaze(type,seed){
+  if(type==='classic') return {type,seed:0,start:{x:40,y:440},goal:{x:585,y:130},walls:[
+    {x:0,y:370,w:560,h:14}, // serpentine: gaps alternate right / left / right
+    {x:80,y:280,w:560,h:14},
+    {x:0,y:190,w:560,h:14}]};
+  const gen={serpentine:genSerpentine,scattered:genScattered,labyrinth:genLabyrinth}[type];
+  return {type,seed,...gen(rng(seed))};
+}
+function hit(x,y){
+  if(x<0||y<0||x>=W||y>=H) return true;
+  return solid[((y/RES)|0)*SW+((x/RES)|0)]===1;
+}
+const MAZE_TYPES=['classic','serpentine','scattered','labyrinth'];
+setMaze(makeMaze('classic',0));
 function pathDist(x,y){
   const cx=Math.min(GW-1,Math.max(0,x/CELL|0)), cy=Math.min(GH-1,Math.max(0,y/CELL|0));
   let v=field[cy*GW+cx];
@@ -230,9 +309,9 @@ function rankRGB(t){
 const rankCss=(t,al=1)=>{const c=rankRGB(t);return `rgba(${c[0]},${c[1]},${c[2]},${al})`;};
 const HUE=Array.from({length:64},(_,i)=>`hsl(${i*360/64},72%,56%)`);
 
-// field glow, rendered once
+// field glow, re-rendered whenever the maze changes
 const fieldCv=document.createElement('canvas');fieldCv.width=GW;fieldCv.height=GH;
-(function(){
+function renderField(){
   const c=fieldCv.getContext('2d'),img=c.createImageData(GW,GH);
   let mx=0;for(const v of field) if(isFinite(v)) mx=Math.max(mx,v);
   for(let i=0;i<GW*GH;i++){
@@ -240,7 +319,7 @@ const fieldCv=document.createElement('canvas');fieldCv.width=GW;fieldCv.height=G
     const t=1-v/mx; img.data[i*4]=61;img.data[i*4+1]=140;img.data[i*4+2]=220;img.data[i*4+3]=Math.round(10+t*t*70);
   }
   c.putImageData(img,0,0);
-})();
+}
 
 // ---------- state ----------
 let pop,rockets,gen,phase,stepsDone,stepF,phaseT,nextPop,lastCosts;
@@ -567,7 +646,22 @@ function loop(t){
   drawArena();drawGenome();drawCharts();
   requestAnimationFrame(loop);
 }
-init();
+// The maze lives in the URL hash (#maze=scattered&seed=1234) so a layout can be shared or replayed.
+function loadMaze(type,seed){
+  const m=makeMaze(type,seed); setMaze(m); renderField();
+  $('mazeType').value=type; $('seedV').textContent=type==='classic'?'':'seed '+seed;
+  history.replaceState(null,'',type==='classic'?location.pathname+location.search:`#maze=${type}&seed=${seed}`);
+  init();
+}
+const randSeed=()=>1+Math.random()*999998|0;
+function loadFromHash(){
+  const q=new URLSearchParams(location.hash.slice(1)), t=q.get('maze'), sd=+q.get('seed');
+  if(MAZE_TYPES.includes(t)) loadMaze(t,t==='classic'?0:(sd>0?sd:randSeed())); else loadMaze('classic',0);
+}
+$('mazeType').onchange=e=>loadMaze(e.target.value,e.target.value==='classic'?0:randSeed());
+$('newMaze').onclick=()=>{const t=$('mazeType').value;loadMaze(t==='classic'?'serpentine':t,randSeed());};
+addEventListener('hashchange',loadFromHash);
+loadFromHash();
 requestAnimationFrame(loop);
 </script>
 </body>
